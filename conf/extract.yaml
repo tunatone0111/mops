@@ -1,0 +1,14 @@
+model:
+  model_id: "CompVis/stable-diffusion-v1-4"
+  dtype: "float16"
+
+inference:
+  num_inference_steps: 50
+  guidance_scale: 7.5
+  seed: 42
+
+input:
+  json_path: ???  # 필수: [{"prompt": "a photo of a cat"}, ...]
+
+output:
+  csv_path: "results/attention_stats.csv"
