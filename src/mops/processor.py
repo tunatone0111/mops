@@ -26,9 +26,9 @@ class StatsAttnProcessor:
     텍스트 cross-attention(seq=77)에서 per-head 통계를 즉시 계산하여 저장한다.
 
     수집 항목:
-    - alpha_prompt / alpha_summary: attention score 부분합
-    - cossim_value: prompt vs summary weighted value의 cosine similarity
-    - cossim_ov: W_o 적용(OV circuit) 후 cosine similarity
+    - alpha_prompt / alpha_summary: attention score 부분합 (spatial별 통계)
+    - cossim_value: spatial 평균 후 prompt vs summary weighted value의 cosine similarity (head당 스칼라)
+    - cossim_ov: spatial 평균 후 W_o 적용(OV circuit) cosine similarity (head당 스칼라)
     """
 
     def __init__(self, stats_store: CrossAttentionStatsStore, layer_name: str) -> None:
@@ -158,8 +158,12 @@ class StatsAttnProcessor:
         alpha_prompt_all_heads = attention_probs_cond[:, :, prompt_idx].sum(dim=-1)
         alpha_summary_all_heads = attention_probs_cond[:, :, summary_idx].sum(dim=-1)
 
-        # === 2) value weighted sum (벡터화 via bmm) ===
-        # prompt: (num_heads, num_spatial, len_p) @ (num_heads, len_p, head_dim) → (num_heads, num_spatial, head_dim)
+        # alpha_ratio: spatial 각 위치에서 prompt/summary 비율 → spatial 평균 (num_heads,)
+        EPS = 1e-12
+        alpha_ratio_per_head = (alpha_prompt_all_heads / (alpha_summary_all_heads + EPS)).mean(dim=1)
+
+        # === 2) value weighted sum → spatial 평균 후 cosine similarity ===
+        # (num_heads, num_spatial, len_p) @ (num_heads, len_p, head_dim) → (num_heads, num_spatial, head_dim)
         weighted_value_prompt = torch.bmm(
             attention_probs_cond[:, :, prompt_idx],
             value_vectors_cond[:, prompt_idx, :],
@@ -168,37 +172,36 @@ class StatsAttnProcessor:
             attention_probs_cond[:, :, summary_idx],
             value_vectors_cond[:, summary_idx, :],
         )
-        # cosine similarity: (num_heads, num_spatial)
-        cossim_value_all_heads = F.cosine_similarity(weighted_value_prompt, weighted_value_summary, dim=-1)
+        # spatial 먼저 평균 → (num_heads, head_dim)
+        wv_prompt_mean = weighted_value_prompt.mean(dim=1)
+        wv_summary_mean = weighted_value_summary.mean(dim=1)
+        # cosine similarity: (num_heads,)
+        cossim_value_per_head = F.cosine_similarity(wv_prompt_mean, wv_summary_mean, dim=-1)
 
-        # === 3) W_o 적용 (OV circuit) — 벡터화 ===
-        # W_o 캐시 (모델 가중치는 추론 중 변하지 않음)
+        # === 3) W_o 적용 (OV circuit) — spatial 평균 후 cosine similarity ===
         if self._cached_output_weight is None:
             self._cached_output_weight = attn.to_out[0].weight.float()
         output_weight = self._cached_output_weight  # (out_dim, inner_dim)
 
-        # head별 W_o slice를 (num_heads, head_dim, out_dim)으로 reshape
-        # inner_dim = num_heads * head_dim 이므로 transpose 후 reshape
-        output_weight_per_head = output_weight.T.reshape(num_heads, head_dim, -1)  # (num_heads, head_dim, out_dim)
+        # head별 W_o slice: (num_heads, head_dim, out_dim)
+        output_weight_per_head = output_weight.T.reshape(num_heads, head_dim, -1)
 
-        # (num_heads, num_spatial, head_dim) @ (num_heads, head_dim, out_dim) → (num_heads, num_spatial, out_dim)
-        ov_prompt = torch.bmm(weighted_value_prompt, output_weight_per_head)
-        ov_summary = torch.bmm(weighted_value_summary, output_weight_per_head)
-        # cosine similarity: (num_heads, num_spatial)
-        cossim_ov_all_heads = F.cosine_similarity(ov_prompt, ov_summary, dim=-1)
+        # (num_heads, head_dim) @ (num_heads, head_dim, out_dim) → (num_heads, out_dim)
+        # unsqueeze(1)로 bmm 호환 → squeeze(1)로 복원
+        ov_prompt = torch.bmm(wv_prompt_mean.unsqueeze(1), output_weight_per_head).squeeze(1)
+        ov_summary = torch.bmm(wv_summary_mean.unsqueeze(1), output_weight_per_head).squeeze(1)
+        # cosine similarity: (num_heads,)
+        cossim_ov_per_head = F.cosine_similarity(ov_prompt, ov_summary, dim=-1)
 
         # === 4) per-head 통계를 CPU로 한꺼번에 전송 후 기록 ===
-        # 모든 통계를 하나의 텐서로 stack → CPU 전송 1회
-        # 각 metric: (num_heads, num_spatial) → per-head (mean, var, max, min)
-        all_metrics = torch.stack(
-            [alpha_prompt_all_heads, alpha_summary_all_heads, cossim_value_all_heads, cossim_ov_all_heads]
-        )  # (4, num_heads, num_spatial)
+        # alpha: (num_heads, num_spatial) → per-head (mean, var, max, min)
+        # alpha_ratio, cossim: (num_heads,) → per-head 스칼라
+        alpha_metrics = torch.stack([alpha_prompt_all_heads, alpha_summary_all_heads])  # (2, num_heads, num_spatial)
+        scalar_metrics = torch.stack([alpha_ratio_per_head, cossim_value_per_head, cossim_ov_per_head]).cpu()
 
         for head_index in range(num_heads):
-            ap_mean, ap_var, ap_max, ap_min = _spatial_stats(all_metrics[0, head_index])
-            as_mean, as_var, as_max, as_min = _spatial_stats(all_metrics[1, head_index])
-            cv_mean, cv_var, cv_max, cv_min = _spatial_stats(all_metrics[2, head_index])
-            co_mean, co_var, co_max, co_min = _spatial_stats(all_metrics[3, head_index])
+            ap_mean, ap_var, ap_max, ap_min = _spatial_stats(alpha_metrics[0, head_index])
+            as_mean, as_var, as_max, as_min = _spatial_stats(alpha_metrics[1, head_index])
 
             self.stats_store.add_record(
                 self.layer_name,
@@ -211,12 +214,7 @@ class StatsAttnProcessor:
                 alpha_summary_var=as_var,
                 alpha_summary_max=as_max,
                 alpha_summary_min=as_min,
-                cossim_value_mean=cv_mean,
-                cossim_value_var=cv_var,
-                cossim_value_max=cv_max,
-                cossim_value_min=cv_min,
-                cossim_ov_mean=co_mean,
-                cossim_ov_var=co_var,
-                cossim_ov_max=co_max,
-                cossim_ov_min=co_min,
+                alpha_ratio=scalar_metrics[0, head_index].item(),
+                cossim_value=scalar_metrics[1, head_index].item(),
+                cossim_ov=scalar_metrics[2, head_index].item(),
             )

@@ -6,7 +6,6 @@ import json
 from pathlib import Path
 
 import hydra
-import pandas as pd
 import torch
 from diffusers import DDIMScheduler, StableDiffusionPipeline
 from diffusers.models.attention_processor import AttnProcessor
@@ -82,7 +81,16 @@ def main(cfg: DictConfig) -> None:
     stats_store = CrossAttentionStatsStore()
     install_stats_processors(pipeline.unet, stats_store)
 
-    # 4. 프롬프트별 생성 루프
+    # 4. 출력 경로 설정
+    output_path = Path(cfg.output.csv_path)
+    if not output_path.is_absolute():
+        output_path = Path(hydra.utils.get_original_cwd()) / output_path
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    # 이전 실행 결과가 있으면 덮어쓰기 위해 삭제
+    if output_path.exists():
+        output_path.unlink()
+
+    # 5. 프롬프트별 생성 루프
     seed = cfg.inference.seed
 
     def on_step_end(_pipe_instance, step_index, _timestep, callback_kwargs):
@@ -115,15 +123,11 @@ def main(cfg: DictConfig) -> None:
             callback_on_step_end_tensor_inputs=["latents"],
         )
 
-    # 5. CSV 저장
-    output_path = Path(cfg.output.csv_path)
-    if not output_path.is_absolute():
-        output_path = Path(hydra.utils.get_original_cwd()) / output_path
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+        # 프롬프트 완료 후 즉시 CSV에 append
+        n_flushed = stats_store.flush_to_csv(output_path)
+        print(f"  → {n_flushed} rows 기록 (누적 파일: {output_path})")
 
-    dataframe = pd.DataFrame(stats_store.csv_records)
-    dataframe.to_csv(output_path, index=False)
-    print(f"CSV 저장 완료: {output_path} ({len(dataframe)} rows)")
+    print(f"\n완료: {output_path}")
 
 
 if __name__ == "__main__":
