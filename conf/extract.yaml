@@ -1,6 +1,5 @@
-model:
-  model_id: "CompVis/stable-diffusion-v1-4"
-  dtype: "float16"
+defaults:
+  - model: sd14
 
 inference:
   num_inference_steps: 50

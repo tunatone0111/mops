@@ -1,0 +1,2 @@
+model_id: "CompVis/stable-diffusion-v1-4"
+dtype: "float16"

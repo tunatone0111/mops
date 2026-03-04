@@ -1,0 +1,2 @@
+model_id: "sd2-community/stable-diffusion-2-1"
+dtype: "float16"
