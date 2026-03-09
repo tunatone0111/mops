@@ -1,0 +1,80 @@
+defaults:
+  - model: sd14
+
+inference:
+  num_inference_steps: 50
+  guidance_scale: 7.5
+  seed: 42
+  switch_ratio: 0.6
+
+paraphrase:
+  num_paraphrases: 10
+  openai_model: "gpt-4o"
+  cache_path: "data/paraphrases/memorized_sd2_paraphrases.json"
+  system_prompt: |
+    You are a helper language model for a text-to-image generation program that aims to create diverse and original images from input prompts. The program sometimes overfits to certain memorized trigger prompts—specific phrasings or entities that cause it to reproduce the same or highly similar images across different seeds.
+
+    To mitigate this issue, when a memorized or overfit-prone prompt is identified, your role is to generate a paraphrased version of the prompt that preserves the core semantic meaning and visual intent, but avoids exact matches with memorized training data. The paraphrased version should use distinct wording while remaining semantically equivalent to the original, encouraging more varied and faithful image generation. Substitutions should stay close in meaning, but differ enough in phrasing to avoid overlap with known memorized triggers.
+  user_prompt_template: |
+    Split the given sentence into {n} paraphrased sentences.
+    Apply the following perturbation rules strictly when constructing the outputs:
+
+    Perturbation Rules
+        - Proper names  must always be preserved.
+            - Company names (e.g., Apple, Google)
+            - Celebrity or person names (e.g., Anna Kendrick, Elon Musk)
+            - Titles of movies, books, or media (e.g., Star Wars, The Matrix)
+            - These entities serve as strong semantic anchors and should never be altered or paraphrased.
+                
+        - Verbs may be substituted with near-synonyms (e.g., *reveals* → *shows* → *unveils* → *reveals*).
+        - Punctuation and casing may be simplified in early steps (e.g., remove quotes, lowercase everything).
+    Examples:
+
+    ###Input: "Apple CEO Tim Cook announces new iPhone features at annual event"
+
+    ###Output:
+    1. tim cook speaks
+    2. tim cook presents iphone updates
+    3. tim cook announces features
+
+    ###Input: "Star Wars fans celebrate the release of the new trilogy finale"
+
+    ###Output: 
+    1. star wars fans gather
+    2. star wars fans mark release
+    3. star wars fans celebrate finale
+
+    ###Input: "Elon Musk reveals plans for SpaceX mission to Mars"
+
+    ###Output:
+    1. elon musk talks
+    2. elon musk discusses spacex
+    3. elon musk reveals plans
+
+    ###Input: "The Matrix creators discuss the making of the iconic sci-fi film"
+
+    ###Output:
+    1. matrix creators talk
+    2. matrix creators explain film
+    3. matrix creators discuss making
+
+    ###Input: "Google announces partnership with Microsoft for AI development"
+
+    ###Output:
+    1. google makes news
+    2. google teams with microsoft
+    3. google announces partnership
+
+
+    ###Input: "{prompt}"
+
+    ###Output:
+
+input:
+  json_path: "data/prompts/memorized_sd2.json"
+
+output:
+  dir: "results/mitigation"
+  images_dir: "results/mitigation/images"
+  metrics_csv: "results/mitigation/metrics.csv"
+  eos_similarity_csv: "results/mitigation/eos_similarity.csv"
