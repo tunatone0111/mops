@@ -42,6 +42,11 @@ dependencies = [
     "matplotlib>=3.10.8",
     "seaborn>=0.13.2",
     "scikit-learn>=1.8.0",
+    # OpenAI API
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    # CLIP Score (open_clip)
+    "open-clip-torch",
 ]
 
 [dependency-groups]
