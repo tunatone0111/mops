@@ -178,6 +178,7 @@ def run(memorized_csv: str, unmemorized_csv: str, name: str) -> None:
 def main() -> None:
     run("memorized_v2.csv", "unmemorized_v2.csv", "SD1.4")
     run("memorized_sd21.csv", "unmemorized_sd21.csv", "SD2.1")
+    run("memorized_rv14.csv", "unmemorized_rv14.csv", "RV1.4")
 
 
 if __name__ == "__main__":
